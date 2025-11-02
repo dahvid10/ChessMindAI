@@ -147,6 +147,45 @@ const AnalysisDisplay: React.FC<AnalysisDisplayProps> = ({ analysis }) => {
 
 
 // --- UTILITY FUNCTIONS ---
+const fetchImageFromUrl = async (url: string): Promise<{ base64: string; mimeType: string; objectUrl: string }> => {
+  try {
+    new URL(url);
+  } catch (_) {
+    throw new Error("The provided text is not a valid URL.");
+  }
+  
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image. Server responded with status: ${response.status}`);
+    }
+    const blob = await response.blob();
+    if (!blob.type.startsWith('image/')) {
+      throw new Error('The URL does not point to a valid image file (e.g., PNG, JPG).');
+    }
+     if (blob.size > 4 * 1024 * 1024) { // 4MB limit
+        throw new Error("Image from URL cannot exceed 4MB.");
+    }
+    const objectUrl = URL.createObjectURL(blob);
+    const base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(blob);
+      reader.onload = () => resolve((reader.result as string).split(',')[1]);
+      reader.onerror = (error) => reject(error);
+    });
+    return { base64, mimeType: blob.type, objectUrl };
+  } catch (error) {
+    console.error("Error details:", error);
+    if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
+        throw new Error("Could not fetch the image. This might be due to a network issue or CORS restrictions on the image's server.");
+    }
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error("An unexpected error occurred while processing the image URL.");
+  }
+};
+
 const fileToBase64 = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -204,6 +243,8 @@ export default function App() {
   const [prompt, setPrompt] = useState('');
   const [imageFile, setImageFile] = useState<ImageFile | null>(null);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+  const [imageUrl, setImageUrl] = useState('');
+  const [inputMode, setInputMode] = useState<'upload' | 'url'>('upload');
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -241,12 +282,14 @@ export default function App() {
       const base64 = await fileToBase64(file);
       setImageFile({ file, base64 });
       setImageDataUrl(URL.createObjectURL(file));
+      setInputMode('upload'); // Switch to upload tab when a file is chosen
     }
   };
 
   const clearImage = () => {
     setImageFile(null);
     setImageDataUrl(null);
+    setImageUrl(''); // Clear URL input as well
     const fileInput = document.getElementById('image-upload') as HTMLInputElement;
     if (fileInput) {
       fileInput.value = '';
@@ -264,9 +307,27 @@ export default function App() {
     setError(null);
     setAnalysis(null);
 
-    const imagePart = imageFile ? {
-      inlineData: { mimeType: imageFile.file.type, data: imageFile.base64 },
-    } : null;
+    let imagePart = null;
+
+    if (inputMode === 'upload' && imageFile) {
+      imagePart = {
+        inlineData: { mimeType: imageFile.file.type, data: imageFile.base64 },
+      };
+    } else if (inputMode === 'url' && imageUrl.trim()) {
+      try {
+        const fetchedImage = await fetchImageFromUrl(imageUrl.trim());
+        imagePart = {
+          inlineData: { mimeType: fetchedImage.mimeType, data: fetchedImage.base64 },
+        };
+        // Update UI to show the fetched image.
+        setImageDataUrl(fetchedImage.objectUrl);
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred while fetching the image.';
+        setError(errorMessage);
+        setIsLoading(false);
+        return;
+      }
+    }
 
     const result = await analyzeChessPosition(prompt, imagePart);
     
@@ -284,7 +345,7 @@ export default function App() {
     }
     
     setIsLoading(false);
-  }, [prompt, imageFile]);
+  }, [prompt, imageFile, inputMode, imageUrl]);
 
 
   return (
@@ -316,21 +377,62 @@ export default function App() {
               </div>
 
               <div className="mb-4">
-                <label
-                  htmlFor="image-upload"
-                  className="relative flex justify-center w-full h-32 px-6 pt-5 pb-6 border-2 border-slate-400 dark:border-slate-600 border-dashed rounded-md cursor-pointer hover:border-amber-500 dark:hover:border-amber-400 transition-colors group"
-                >
-                  <div className="space-y-1 text-center">
-                    <UploadIcon className="mx-auto h-10 w-10 text-slate-500 group-hover:text-amber-500 dark:group-hover:text-amber-400 transition-colors" />
-                    <div className="flex text-sm text-slate-500 dark:text-slate-400">
-                      <p className="pl-1">
-                        {imageFile ? 'Replace image' : 'Upload a board image'}
-                      </p>
+                <div className="flex border-b border-slate-300 dark:border-slate-600">
+                  <button
+                    type="button"
+                    onClick={() => setInputMode('upload')}
+                    className={`px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/80 ${
+                      inputMode === 'upload'
+                        ? 'border-b-2 border-amber-500 text-amber-600 dark:text-amber-400'
+                        : 'border-b-2 border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    Upload Image
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setInputMode('url')}
+                    className={`px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/80 ${
+                      inputMode === 'url'
+                        ? 'border-b-2 border-amber-500 text-amber-600 dark:text-amber-400'
+                        : 'border-b-2 border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    Image URL
+                  </button>
+                </div>
+                <div className="pt-5">
+                  {inputMode === 'upload' ? (
+                    <label
+                      htmlFor="image-upload"
+                      className="relative flex justify-center w-full h-32 px-6 border-2 border-slate-400 dark:border-slate-600 border-dashed rounded-md cursor-pointer hover:border-amber-500 dark:hover:border-amber-400 transition-colors group"
+                    >
+                      <div className="space-y-1 text-center self-center">
+                        <UploadIcon className="mx-auto h-10 w-10 text-slate-500 group-hover:text-amber-500 dark:group-hover:text-amber-400 transition-colors" />
+                        <div className="flex text-sm text-slate-500 dark:text-slate-400">
+                          <p className="pl-1">
+                            {imageFile ? 'Replace image' : 'Upload a board image'}
+                          </p>
+                        </div>
+                        <p className="text-xs text-slate-500">PNG, JPG, GIF up to 4MB</p>
+                      </div>
+                      <input id="image-upload" name="image-upload" type="file" className="sr-only" accept="image/png, image/jpeg, image/gif" onChange={handleImageChange} />
+                    </label>
+                  ) : (
+                    <div>
+                      <label htmlFor="image-url" className="sr-only">Image URL</label>
+                      <input
+                        id="image-url"
+                        name="image-url"
+                        type="url"
+                        value={imageUrl}
+                        onChange={(e) => setImageUrl(e.target.value)}
+                        className="w-full bg-slate-100 dark:bg-slate-800 border border-slate-400 dark:border-slate-600 rounded-lg p-3 text-slate-800 dark:text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-amber-500 dark:focus:ring-amber-400 focus:border-amber-500 dark:focus:border-amber-400 transition"
+                        placeholder="https://example.com/chessboard.png"
+                      />
                     </div>
-                    <p className="text-xs text-slate-500">PNG, JPG, GIF up to 4MB</p>
-                  </div>
-                  <input id="image-upload" name="image-upload" type="file" className="sr-only" accept="image/png, image/jpeg, image/gif" onChange={handleImageChange} />
-                </label>
+                  )}
+                </div>
               </div>
 
               {imageDataUrl && <ImagePreview imageDataUrl={imageDataUrl} onClear={clearImage} />}
