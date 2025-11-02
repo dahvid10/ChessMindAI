@@ -1,0 +1,5 @@
+{
+  "name": "ChessMind AI",
+  "description": "An application that generates expert-level chess moves and analysis based on user-described scenarios and optional chessboard images, powered by the Gemini API.",
+  "requestFramePermissions": []
+}
